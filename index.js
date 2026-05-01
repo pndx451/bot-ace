@@ -2,13 +2,19 @@ const { Client, GatewayIntentBits, Partials, REST, Routes } = require('discord.j
 require('dotenv').config();
 
 const config = require('./src/config');
-const { commands } = require('./src/commands');
-const { ensureStorage } = require('./src/utils/storage');
-const { handleInteractions, checkGiveaways } = require('./src/handlers/interactions');
-const { handleMemberJoin, handleMemberLeave } = require('./src/handlers/members');
-const { rememberMessage, handleMessageDelete } = require('./src/handlers/logs');
+const { commands } = require('./src/commands/registry');
+const { ensureFiles } = require('./src/utils/storage');
+const { handleInteraction } = require('./src/events/interactions');
+const { memberJoin, memberLeave } = require('./src/events/members');
+const { cacheMessage, messageDelete } = require('./src/events/logs');
+const { checkGiveaways } = require('./src/systems/giveaways');
 
-ensureStorage();
+if (!process.env.TOKEN) {
+  console.log('Missing TOKEN in .env');
+  process.exit(1);
+}
+
+ensureFiles();
 
 const client = new Client({
   intents: [
@@ -18,19 +24,8 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildPresences
   ],
-  partials: [Partials.Message, Partials.Channel, Partials.GuildMember, Partials.User]
+  partials: [Partials.Message, Partials.Channel, Partials.GuildMember]
 });
-
-async function syncOwnerCommandVisibility(rest, appId, guildId, registeredCommands) {
-  const permissions = config.owners.map(id => ({ id, type: 2, permission: true }));
-  for (const command of registeredCommands) {
-    try {
-      await rest.put(`/applications/${appId}/guilds/${guildId}/commands/${command.id}/permissions`, { body: { permissions } });
-    } catch (err) {
-      console.log(`[COMMAND PERMISSIONS] Could not lock /${command.name}. Runtime protection is still enabled.`);
-    }
-  }
-}
 
 client.once('clientReady', async () => {
   console.log(`[ACE BOT] Connected as ${client.user.tag}`);
@@ -41,28 +36,17 @@ client.once('clientReady', async () => {
   });
 
   const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
-  const guildId = process.env.GUILD_ID || config.ids.guild;
-
-  const registered = await rest.put(
-    Routes.applicationGuildCommands(client.user.id, guildId),
-    { body: commands }
-  );
-
-  await syncOwnerCommandVisibility(rest, client.user.id, guildId, registered);
-
+  await rest.put(Routes.applicationGuildCommands(client.user.id, config.guildId), { body: commands });
   console.log('[ACE BOT] Slash commands registered.');
-  console.log('[ACE BOT] Owner-only runtime protection enabled.');
+  console.log('[ACE BOT] Runtime owner protection enabled.');
 
   setInterval(() => checkGiveaways(client), 15000);
 });
 
-client.on('interactionCreate', interaction => handleInteractions(client, interaction));
-client.on('guildMemberAdd', member => handleMemberJoin(client, member));
-client.on('guildMemberRemove', member => handleMemberLeave(client, member));
-client.on('messageCreate', message => rememberMessage(message));
-client.on('messageDelete', message => handleMessageDelete(client, message));
-
-process.on('unhandledRejection', err => console.log('[UNHANDLED REJECTION]', err));
-process.on('uncaughtException', err => console.log('[UNCAUGHT EXCEPTION]', err));
+client.on('interactionCreate', interaction => handleInteraction(client, interaction));
+client.on('guildMemberAdd', member => memberJoin(client, member));
+client.on('guildMemberRemove', member => memberLeave(client, member));
+client.on('messageCreate', message => cacheMessage(message));
+client.on('messageDelete', message => messageDelete(client, message));
 
 client.login(process.env.TOKEN);
